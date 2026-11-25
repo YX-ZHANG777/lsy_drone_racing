@@ -26,6 +26,7 @@ N_ACT = 3  # roll, pitch, collective thrust (yaw command fixed to 0)
 
 # action limits
 MAX_TILT = 0.75  # rad, roll/pitch command limit
+ANGV_WORLD = [False]  # features_v2: rotate the body-frame angular velocity to the world frame first (fix, 11-19)
 
 
 def quat_to_rotmat(q, xp):
@@ -180,7 +181,10 @@ def features_v2(obs, last_action, prev_vel, xp, vlim=None):
     Rh = xp.stack([_rot(R[:, :, j], c1d, s1d) for j in range(3)], -1).reshape(n, 9)
     vel_h = _rot(vel, c1d, s1d)
     pvel_h = _rot(prev_vel, c1d, s1d)
-    angv_h = _rot(obs["ang_vel"], c1d, s1d)
+    # obs["ang_vel"] is BODY-frame (crazyflow and the real drone-estimators). Old policies (ANGV_WORLD off) rotated
+    # it like a world vector; with ANGV_WORLD on it is first rotated to the world frame (consistent with vel_h).
+    angv = xp.einsum("nij,nj->ni", R, obs["ang_vel"]) if ANGV_WORLD[0] else obs["ang_vel"]
+    angv_h = _rot(angv, c1d, s1d)
     g1, d1, g2, d2 = gate_targets(obs, xp)
     cw1, nw1 = _gate_feats(obs, g1, d1, xp)
     cw2, nw2 = _gate_feats(obs, g2, d2, xp)
@@ -282,11 +286,29 @@ def _cylinders(obs, xp, prm):
         # post_seg3: each side bar (thin plate, gate-local y 0.20..0.36, x +-0.01) as 3 small circles
         # along the bar instead of one big cylinder; default: one cylinder at post_y
         offs = prm["post_offs"] if prm.get("post_seg3", False) else (prm["post_y"],)
+        r_post = xp.full((n, G), prm["r_post"])
+        if prm.get("box", 0.0) > 0:
+            # the race env collides with a BOX (half 0.07 x 0.07 x 0.02, rotating with the drone), not the 0.086 m
+            # sphere the radii were designed for: its half-width along the gate's lateral axis is
+            # 0.07 (|bx.u| + |by.u|) with the drone's horizontal body axes bx, by -> 0.070 (aligned) .. 0.099 (45 deg)
+            Rd = quat_to_rotmat(obs["quat"], xp)
+            yd = xp.arctan2(Rd[:, 1, 0], Rd[:, 0, 0])
+            un = lat / xp.sqrt((lat**2).sum(-1, keepdims=True) + 1e-9)
+            cb, sb = xp.cos(yd)[:, None], xp.sin(yd)[:, None]
+            ext = 0.07 * (xp.abs(cb * un[..., 0] + sb * un[..., 1]) + xp.abs(-sb * un[..., 0] + cb * un[..., 1]))
+            r_post = r_post + ext - 0.086 + prm.get("box_extra", 0.0)
         for sgn in (1.0, -1.0):
             for oy in offs:
                 cen.append(gp[..., :2] + sgn * oy * lat)
-                rad.append(xp.full((n, G), prm["r_post"]))
+                rad.append(r_post)
                 act.append(near_z)
+    if prm.get("stand", 0.0) > 0:
+        # gate stands: vertical 0.1 x 0.1 m box from the ground up to the lower frame edge
+        # (gate-local z = -0.36); active while the drone (radius 0.086 m) is below that edge + margin
+        gp = obs["gates_pos"]
+        cen.append(gp[..., :2])
+        rad.append(xp.full(gp.shape[:2], prm["stand"]))
+        act.append(p[:, None, 2] < gp[..., 2] - 0.36 + prm.get("stand_dz", 0.12))
     return xp.concatenate(cen, 1), xp.concatenate(rad, 1), xp.concatenate(act, 1)
 
 
@@ -307,7 +329,7 @@ def _pred_obs(obs, prm):
     return {**obs, "pos": obs["pos"] + dl[:, None] * obs["vel"]}
 
 
-CBF.update(post_seg3=False, post_offs=(0.22, 0.28, 0.34), pred_T=0.0, pred_g=8.0, lag_acc=0.0,
+CBF.update(box=0.0, box_extra=0.0, stand=0.0, stand_dz=0.12, post_seg3=False, post_offs=(0.22, 0.28, 0.34), pred_T=0.0, pred_g=8.0, lag_acc=0.0,
            wall=0.0, wall_x=2.5, wall_y=1.5)
 
 

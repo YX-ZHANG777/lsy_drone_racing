@@ -69,8 +69,25 @@ class RacePPO(Controller):
         F.CBF["post_seg3"] = bool(self.w.pop("cbf_post3", 0.0))
         F.CBF["bar_pred"] = bool(self.w.pop("cbf_bar_pred", 0.0))
         F.CBF["bar_seg3"] = bool(self.w.pop("cbf_bar3", 0.0))
+        # circle positions along the side bars / top-bottom bars (gate-local, m); npz keys or env overrides
+        for key, envn in (("post_offs", "RL_POST_OFFS"), ("bar_offs", "RL_BAR_OFFS")):
+            v = os.environ.get(envn) or (",".join(str(x) for x in self.w.pop("cbf_" + key)) if "cbf_" + key in self.w else "")
+            if v:
+                F.CBF[key] = tuple(float(x) for x in v.split(","))
+        for key, envn in (("bar_len3", "RL_BAR_LEN3"), ("post_dz", "RL_POST_DZ")):
+            v = os.environ.get(envn) or (str(float(self.w.pop("cbf_" + key))) if "cbf_" + key in self.w else "")
+            if v:
+                F.CBF[key] = float(v)
         F.CBF["wall"] = float(self.w.pop("cbf_wall", 0.0))  # arena-wall barrier margin
+        # gate stands as barrier cylinders (radius, m); env RL_STAND overrides the npz value
+        F.CBF["stand"] = float(os.environ.get("RL_STAND", self.w.pop("cbf_stand", 0.0)))
+        self.w.pop("cbf_stand", None)
         F.CBF["lag_acc"] = float(self.w.pop("cbf_lag", 0.0))  # attitude-lag look-ahead of the barriers
+        # 11-19: box-aware side-bar radius (drone collision box, see race_ppo_features._cylinders) and the
+        # angular-velocity frame fix; always set (module-level state must not leak from a previously loaded npz)
+        F.CBF["box"] = float(self.w.pop("cbf_box", 0.0))
+        F.CBF["box_extra"] = float(self.w.pop("cbf_box_extra", 0.0))
+        F.ANGV_WORLD[0] = bool(self.w.pop("angv_world", 0.0))
         F.CBF["ground_z"] = float(self.w.pop("cbf_ground_z", 0.0))  # take-off tilt limit
         F.CBF["ground_a"] = float(self.w.pop("cbf_ground_a", 2.0))
         F.CBF["delay"] = float(self.w.pop("cbf_delay", 0.0))
